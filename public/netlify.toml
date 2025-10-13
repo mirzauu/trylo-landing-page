@@ -1,0 +1,39 @@
+
+
+# Handle SPA routing - redirect all non-file requests to index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Specific redirects (these need to come after the catch-all)
+[[redirects]]
+  from = "/welcome"
+  to = "/"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/welcome/"
+  to = "/"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/page2"
+  to = "/page2"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/privacy"
+  to = "/privacy"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/refund"
+  to = "/refund"
+  status = 301
+  force = true
+
