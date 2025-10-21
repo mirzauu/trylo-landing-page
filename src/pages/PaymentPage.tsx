@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, Check, CreditCard, Shield } from 'lucide-react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+// ...existing code...
+import React, { useState, useEffect } from 'react';
+import { ArrowLeft, CreditCard, Shield } from 'lucide-react';
+import { Link, useLocation } from 'react-router-dom';
 
-const BACKEND_BASE_URL = 'https://api.trylo.space'; // Replace with your backend URL
+const BACKEND_BASE_URL = 'http://127.0.0.1:8000'; // Replace with your backend URL
 
 const PaymentPage: React.FC = () => {
   const [selectedPackage, setSelectedPackage] = useState<'monthly' | 'custom'>('monthly');
@@ -15,7 +16,6 @@ const PaymentPage: React.FC = () => {
   });
 
   const location = useLocation();
-  const navigate = useNavigate();
 
   const [planId, setPlanId] = useState<string | null>(null);
   const [amount, setAmount] = useState<string | null>(null);
@@ -38,14 +38,29 @@ const PaymentPage: React.FC = () => {
     }
   }, [location.search]);
 
-  // API call to create PhonePe order with Authorization header
-  const createPhonePeOrder = async (
+  // Load Cashfree SDK
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://sdk.cashfree.com/js/v3/cashfree.js';
+    script.async = true;
+    script.onload = () => {
+      console.log('Cashfree SDK loaded');
+    };
+    document.head.appendChild(script);
+    return () => {
+      const existingScript = document.querySelector('script[src*="cashfree.js"]');
+      if (existingScript) existingScript.remove();
+    };
+  }, []);
+
+  // API call to create Cashfree order with Authorization header
+  const createCashfreeOrder = async (
     amountPaise: number,
     plan: number,
     token: string,
     currency = 'INR',
     customerData: any
-  ): Promise<{ tokenUrl: string; transactionId?: string }> => {
+  ): Promise<{ paymentSessionId: string; transactionId?: string }> => {
     const response = await fetch(`${BACKEND_BASE_URL}/api/payments/create-phonepe-order`, {
       method: 'POST',
       headers: {
@@ -60,16 +75,19 @@ const PaymentPage: React.FC = () => {
       }),
     });
     if (!response.ok) {
-      throw new Error('Failed to create PhonePe order');
+      throw new Error('Failed to create Cashfree order');
     }
     const data = await response.json();
-    const tokenUrl = data.tokenUrl || data.token_url;
+    const paymentSessionId = data.payment_session_id || data.paymentSessionId || data.payment_session || data.sessionId;
     const transactionId =
       data.transactionId ||
       data.transaction_id ||
       data.merchantTransactionId ||
       data.merchant_transaction_id;
-    return { tokenUrl, transactionId };
+    if (!paymentSessionId) {
+      throw new Error('No payment session id returned from backend');
+    }
+    return { paymentSessionId, transactionId };
   };
 
   // API call to get payment status
@@ -89,40 +107,6 @@ const PaymentPage: React.FC = () => {
     };
   };
 
-  const phonePeCallback = useCallback(async (response: string) => {
-    console.log('PhonePe callback response:', response);
-    if (response === 'USER_CANCEL') {
-      alert('Payment cancelled by user.');
-    } else if (response === 'CONCLUDED') {
-      alert('Payment completed successfully!');
-      try {
-        if (transactionId && accessToken) {
-          const { status } = await getPaymentStatus(transactionId, accessToken);
-          console.log('Payment status:', status);
-        }
-      } catch (e) {
-        console.error('Failed to verify payment status:', e);
-      } finally {
-        window.location.href = 'https://app.trylo.space/';
-
-      }
-    }
-  }, [transactionId, accessToken, navigate]);
-
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://mercury.phonepe.com/web/bundle/checkout.js';
-    script.async = true;
-    script.onload = () => {
-      console.log('PhonePe Checkout script loaded');
-    };
-    document.head.appendChild(script);
-    return () => {
-      const existingScript = document.querySelector('script[src*="checkout.js"]');
-      if (existingScript) existingScript.remove();
-    };
-  }, []);
-
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
   };
@@ -140,34 +124,41 @@ const PaymentPage: React.FC = () => {
     setIsLoading(true);
     try {
       const amountPaise = parseInt(amount);
-      // Create PhonePe order with customer form data
-      const { tokenUrl, transactionId } = await createPhonePeOrder(
+
+      // Create Cashfree order with customer form data
+      const { paymentSessionId, transactionId } = await createCashfreeOrder(
         amountPaise,
         Number(planId),
         accessToken,
-        'INR',
+        'USD',
         formData
       );
       setTransactionId(transactionId);
 
-      if ((window as any).PhonePeCheckout) {
-        (window as any).PhonePeCheckout.transact({
-          tokenUrl,
-          callback: phonePeCallback,
-          type: 'IFRAME',
+      // Initiate Cashfree checkout
+      const CashfreeCtor = (window as any).Cashfree;
+      if (CashfreeCtor) {
+        const cashfree = CashfreeCtor({
+          mode: 'sandbox', // or 'TEST' depending on environment
         });
+        const checkoutOptions = {
+          paymentSessionId,
+          redirectTarget: '_blank', // opens in same tab
+        };
+        cashfree.checkout(checkoutOptions);
+        // Note: Cashfree will redirect to the payment/response page.
+        // After redirect you can use transactionId + backend verification to confirm status.
       } else {
-        alert('PhonePe SDK not loaded yet. Please try again.');
+        alert('Cashfree SDK not loaded yet. Please try again.');
       }
     } catch (error) {
-      console.error('PhonePe payment initiation failed:', error);
+      console.error('Cashfree payment initiation failed:', error);
       alert('Unable to initiate payment. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
 
-   
   const planDetails: Record<string, { name: string; description: string }> = {
     '1': {
       name: 'Basic',
@@ -182,27 +173,26 @@ const PaymentPage: React.FC = () => {
       description: 'This is for 1 month validity, and the remaining tokens will roll back to the next month.'
     }
   };
-  
+
   const planName = planId && planDetails[planId] ? planDetails[planId].name : 'Plan';
   const planDescription = planId && planDetails[planId] ? planDetails[planId].description : '';
-  
 
   return (
     <div className="min-h-screen bg-gray-100 flex items-center justify-center px-4">
       <div className="w-full max-w-4xl bg-white rounded-xl shadow-2xl flex flex-col md:flex-row overflow-hidden">
         {/* Left column: Amount info */}
         <div className="md:w-1/2 w-full bg-gray-900 text-white flex flex-col justify-center items-center p-10">
-    <h1 className="text-2xl font-bold mb-4">Subscribe to  - {planName}</h1>
-    <div className="text-4xl font-bold mb-2">
-      ₹{amount ? (parseInt(amount) / 100).toFixed(2) : '39.00'}
-    </div>
-    <span className="text-lg text-gray-300 mb-4">per month</span>
-    <p className="text-sm text-gray-300 mb-10 text-center">{planDescription}</p>
-    <div className="flex items-center gap-3 mt-auto">
-      <Shield size={18} className="text-green-400" />
-      <span className="text-xs text-green-400">100% Secure payment gateway powered by PhonePe</span>
-    </div>
-  </div>
+          <h1 className="text-2xl font-bold mb-4">Subscribe to  - {planName}</h1>
+          <div className="text-4xl font-bold mb-2">
+            ₹{amount ? (parseInt(amount) / 100).toFixed(2) : '39.00'}
+          </div>
+          <span className="text-lg text-gray-300 mb-4">per month</span>
+          <p className="text-sm text-gray-300 mb-10 text-center">{planDescription}</p>
+          <div className="flex items-center gap-3 mt-auto">
+            <Shield size={18} className="text-green-400" />
+            <span className="text-xs text-green-400">100% Secure payment gateway powered by Cashfree</span>
+          </div>
+        </div>
 
         {/* Right column: Payment form */}
         <div className="md:w-1/2 w-full p-8 flex flex-col justify-center items-center bg-white">
@@ -240,7 +230,7 @@ const PaymentPage: React.FC = () => {
               value={formData.phone}
               onChange={handleInputChange}
             />
-            
+
             <textarea
               name="requirements"
               placeholder=""
@@ -250,7 +240,7 @@ const PaymentPage: React.FC = () => {
               onChange={handleInputChange}
             />
 
-            {/* Submit button triggers PhonePe payment */}
+            {/* Submit button triggers Cashfree payment */}
             <button
               type="submit"
               disabled={isLoading}
@@ -267,3 +257,4 @@ const PaymentPage: React.FC = () => {
 };
 
 export default PaymentPage;
+// ...existing code...
